@@ -1,7 +1,15 @@
-streamlit
+streamlit>=1.32
+faiss-cpu
+numpy
 pdfplumber
+python-docx
+groq
+python-dotenv
 langchain-text-splitters
 sentence-transformers
-faiss-cpu
-groq
-numpy
+
+# Optional — scanned-PDF OCR fallback. Also requires the system
+# packages tesseract-ocr and poppler-utils (see README / Dockerfile).
+pytesseract
+pdf2image
+Pillow

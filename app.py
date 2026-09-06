@@ -1,327 +1,415 @@
-import os
-import re
-import tempfile
-import numpy as np
-import faiss
-import streamlit as st
-from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from groq import Groq
-import pdfplumber
+import time
+from datetime import datetime
 
-# ─────────────────────────────────────────────
-#  PAGE CONFIG
-# ─────────────────────────────────────────────
+import streamlit as st
+
+import rag_core
+
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
 st.set_page_config(
-    page_title="RAG · PDF Q&A",
+    page_title="RAG PDF Q&A",
     page_icon="✦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────
-#  CUSTOM CSS
-# ─────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Inter:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
-    background-color: #0e0b1a;
-    color: #dcd6f7;
-}
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #120f24 0%, #0e0b1a 100%);
-    border-right: 1px solid #2a2050;
-}
-.main .block-container {
-    padding-top: 2rem;
-    max-width: 860px;
-}
-.rag-header {
-    font-family: 'Cinzel', serif;
-    font-size: 1.8rem;
-    font-weight: 600;
-    background: linear-gradient(90deg, #c9a84c, #f0d080, #c9a84c);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    letter-spacing: 0.08em;
-    margin-bottom: 0.2rem;
-}
-.rag-sub {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.72rem;
-    color: #6b5ea8;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    margin-bottom: 1.5rem;
-}
-.divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, #3d2f7a, #c9a84c44, #3d2f7a, transparent);
-    margin: 0.5rem 0 1.8rem 0;
-}
-.sidebar-section {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.68rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: #c9a84c;
-    margin: 1.2rem 0 0.5rem 0;
-    padding-bottom: 0.3rem;
-    border-bottom: 1px solid #2a2050;
-}
-.badge {
-    display: inline-block;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    letter-spacing: 0.08em;
-    margin: 0.5rem 0 0.4rem 0;
-}
-.badge-ready   { background: #0d2b1a; color: #4ade80; border: 1px solid #16a34a55; }
-.badge-noindex { background: #2a1a00; color: #c9a84c; border: 1px solid #c9a84c55; }
-.chat-user {
-    background: linear-gradient(135deg, #1e1640 0%, #1a1235 100%);
-    border: 1px solid #3d2f7a;
-    border-left: 3px solid #c9a84c;
-    border-radius: 8px;
-    padding: 0.85rem 1.1rem;
-    margin: 0.6rem 0;
-    font-size: 0.93rem;
-    line-height: 1.6;
-}
-.chat-assistant {
-    background: linear-gradient(135deg, #12102a 0%, #0f0d22 100%);
-    border: 1px solid #2a2050;
-    border-left: 3px solid #7c6fcf;
-    border-radius: 8px;
-    padding: 0.85rem 1.1rem;
-    margin: 0.6rem 0;
-    font-size: 0.93rem;
-    line-height: 1.7;
-}
-.chat-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    margin-bottom: 0.45rem;
-}
-.label-user { color: #c9a84c; }
-.label-bot  { color: #9d8fe8; }
-[data-testid="stTextInput"] input {
-    background-color: #1a1635 !important;
-    border: 1px solid #3d2f7a !important;
-    border-radius: 8px !important;
-    color: #dcd6f7 !important;
-    font-family: 'Inter', sans-serif !important;
-    font-size: 0.93rem !important;
-    transition: border-color 0.2s ease !important;
-}
-[data-testid="stTextInput"] input:focus {
-    border-color: #c9a84c !important;
-    box-shadow: 0 0 0 2px #c9a84c22 !important;
-}
-[data-testid="stTextInput"] input::placeholder { color: #4a3f7a !important; }
-.stButton > button {
-    background: linear-gradient(135deg, #2d1f6e, #1e1648) !important;
-    border: 1px solid #c9a84c88 !important;
-    color: #c9a84c !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 0.78rem !important;
-    letter-spacing: 0.1em !important;
-    border-radius: 6px !important;
-    transition: all 0.2s ease !important;
-}
-.stButton > button:hover {
-    border-color: #c9a84c !important;
-    box-shadow: 0 0 12px #c9a84c33 !important;
-}
-</style>
-""", unsafe_allow_html=True)
+# ============================================================
+# CUSTOM STYLING
+# ============================================================
 
-# ─────────────────────────────────────────────
-#  SESSION STATE
-# ─────────────────────────────────────────────
-if "chunks" not in st.session_state:
-    st.session_state.chunks = None
-if "index" not in st.session_state:
-    st.session_state.index = None
-if "pdf_name" not in st.session_state:
-    st.session_state.pdf_name = None
+st.markdown(
+    """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg: #FAFAFC;
+            --panel: #FFFFFF;
+            --border: #E9E9F1;
+            --text: #1F2333;
+            --muted: #6B7280;
+            --accent-a: #6C5CE7;
+            --accent-b: #17B8A6;
+            --accent-soft: rgba(108, 92, 231, 0.08);
+            --good: #17A673;
+            --warn: #C98A1B;
+            --bad: #D65C5C;
+        }
+
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, sans-serif;
+            color: var(--text);
+        }
+
+        .stApp { background: var(--bg); }
+        .main .block-container { padding-top: 2rem; }
+
+        /* HEADER */
+        .app-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.15rem;
+            background: linear-gradient(100deg, var(--accent-a) 0%, var(--accent-b) 100%);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: rr-gradient-shift 6s ease-in-out infinite;
+            display: inline-block;
+        }
+        @keyframes rr-gradient-shift {
+            0%, 100% { background-position: 0% center; }
+            50% { background-position: 100% center; }
+        }
+        .app-subtitle { color: var(--muted); font-size: 1rem; margin-bottom: 1.6rem; }
+
+        /* SIDEBAR */
+        section[data-testid="stSidebar"] { background: var(--panel); border-right: 1px solid var(--border); }
+        .sidebar-title { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.9rem; }
+        .sidebar-section-label {
+            font-size: 0.72rem; font-weight: 600; color: var(--muted);
+            margin: 1rem 0 0.4rem 0;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+            border-radius: 10px; border: 1.5px dashed var(--border);
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]:hover {
+            border-color: var(--accent-a); background: var(--accent-soft);
+        }
+
+        .doc-card {
+            padding: 0.6rem 0.75rem;
+            border-radius: 10px;
+            background: var(--accent-soft);
+            border: 1px solid rgba(108, 92, 231, 0.18);
+            margin-bottom: 0.5rem;
+            animation: rr-fade-up 0.3s ease-out;
+        }
+        .doc-name { font-weight: 600; font-size: 0.88rem; word-break: break-word; }
+        .doc-meta { color: var(--muted); font-size: 0.76rem; margin-top: 0.15rem; }
+
+        .stButton > button {
+            border-radius: 8px; border: 1px solid var(--border);
+            background: var(--panel); color: var(--text); font-weight: 500;
+            transition: all 0.18s ease;
+        }
+        .stButton > button:hover {
+            border-color: var(--accent-a); color: var(--accent-a);
+            transform: translateY(-1px); box-shadow: 0 4px 10px rgba(108, 92, 231, 0.15);
+        }
+
+        .stAlert { border-radius: 10px; animation: rr-fade-up 0.3s ease-out; }
+        @keyframes rr-fade-up {
+            from { opacity: 0; transform: translateY(4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        /* CHAT */
+        [data-testid="stChatMessage"] { border-radius: 14px; animation: rr-fade-up 0.3s ease-out; margin-bottom: 0.4rem; }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+            background: var(--accent-soft); border: 1px solid rgba(108, 92, 231, 0.15);
+            border-radius: 14px; padding: 0.7rem 1rem;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageContent"] {
+            background: var(--panel); border: 1px solid var(--border);
+            border-radius: 14px; padding: 0.7rem 1rem;
+        }
+        [data-testid="stChatInput"] { border-radius: 12px; }
+        [data-testid="stChatInput"]:focus-within { box-shadow: 0 0 0 2px var(--accent-soft); }
+
+        /* CONFIDENCE BADGE */
+        .rr-badge {
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            font-size: 0.74rem; font-weight: 600; padding: 0.15rem 0.6rem;
+            border-radius: 999px; margin-bottom: 0.5rem;
+        }
+        .rr-badge-green { background: rgba(23, 166, 115, 0.12); color: var(--good); }
+        .rr-badge-amber { background: rgba(201, 138, 27, 0.12); color: var(--warn); }
+        .rr-badge-red   { background: rgba(214, 92, 92, 0.12); color: var(--bad); }
+        .rr-badge-gray  { background: rgba(107, 114, 128, 0.12); color: var(--muted); }
+
+        .rr-source {
+            font-size: 0.82rem; color: var(--muted);
+            border-left: 2px solid var(--border);
+            padding: 0.3rem 0 0.3rem 0.6rem; margin-bottom: 0.4rem;
+        }
+        .rr-source b { color: var(--text); }
+
+        /* EMPTY STATE */
+        .rr-empty {
+            border: 1.5px dashed var(--border); border-radius: 14px;
+            padding: 2.4rem 1.6rem; text-align: center; margin-top: 0.5rem; background: var(--panel);
+        }
+        .rr-empty h3 { margin-bottom: 0.4rem; }
+        .rr-empty p { color: var(--muted); }
+
+        @media (prefers-reduced-motion: reduce) {
+            .app-title, [data-testid="stChatMessage"], .stAlert, .doc-card { animation: none !important; }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "documents" not in st.session_state:
+    st.session_state.documents = {}       # hash -> document dict
+if "active_docs" not in st.session_state:
+    st.session_state.active_docs = set()  # set of hashes
+if "processed_names" not in st.session_state:
+    st.session_state.processed_names = set()
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "last_query" not in st.session_state:
-    st.session_state.last_query = ""
+    st.session_state.chat_history = []    # list of {role, content, sources?, confidence?}
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = rag_core.DEFAULT_MODEL
 
-# ─────────────────────────────────────────────
-#  LOAD MODELS
-# ─────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def load_embedding_model():
-    return SentenceTransformer("BAAI/bge-small-en-v1.5")
 
-@st.cache_resource(show_spinner=False)
-def load_groq_client():
-    return Groq(api_key=os.environ.get("GROQ_API_KEY"))
+# ============================================================
+# SIDEBAR
+# ============================================================
 
-# ─────────────────────────────────────────────
-#  INDEXING
-# ─────────────────────────────────────────────
-def build_index(pdf_bytes):
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(pdf_bytes)
-        tmp_path = tmp.name
-
-    full_text = ""
-    with pdfplumber.open(tmp_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
-    os.unlink(tmp_path)
-
-    full_text = re.sub(r'\n+', '\n', full_text)
-    full_text = re.sub(r' +', ' ', full_text)
-    full_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', full_text)
-    full_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', full_text)
-    full_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', full_text)
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    chunks = splitter.split_text(full_text)
-
-    model = load_embedding_model()
-    embeddings = model.encode(chunks, show_progress_bar=False, normalize_embeddings=True)
-    embeddings = np.array(embeddings).astype("float32")
-
-    faiss_index = faiss.IndexFlatIP(embeddings.shape[1])
-    faiss_index.add(embeddings)
-
-    return chunks, faiss_index
-
-# ─────────────────────────────────────────────
-#  RAG PIPELINE
-# ─────────────────────────────────────────────
-def retrieve_chunks(query, chunks, index, k=3):
-    model = load_embedding_model()
-    query_embedding = model.encode([query], normalize_embeddings=True)
-    query_embedding = np.array(query_embedding).astype("float32")
-    _, indices = index.search(query_embedding, k)
-    retrieved = [chunks[i] for i in indices[0]]
-
-    limitation_keywords = ['limitation', 'limitations', 'drawback', 'weakness', 'constraint']
-    if any(kw in query.lower() for kw in limitation_keywords):
-        if len(chunks) > 37 and chunks[37] not in retrieved:
-            retrieved[0] = chunks[37]
-
-    return retrieved
-
-def build_prompt(query, context_chunks):
-    context = "\n\n".join(context_chunks)
-    return f"""You are a helpful assistant. Answer the question based only on the context below.
-If the answer is not in the context, say "I don't know based on the provided document."
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
-
-def ask(query, chunks, index):
-    client = load_groq_client()
-    context_chunks = retrieve_chunks(query, chunks, index)
-    prompt = build_prompt(query, context_chunks)
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
-    return response.choices[0].message.content
-
-# ─────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<div class="rag-header" style="font-size:1.1rem;">✦ RAG PDF Q&A</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="sidebar-section">Document</div>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", label_visibility="collapsed")
+    st.markdown('<div class="sidebar-title">✦ RAG PDF Q&A</div>', unsafe_allow_html=True)
+    st.write("Upload one or more documents and ask questions about their content.")
 
-    if uploaded_file is not None:
-        if uploaded_file.name != st.session_state.pdf_name:
-            with st.spinner("Indexing document..."):
-                chunks, faiss_index = build_index(uploaded_file.read())
-                st.session_state.chunks = chunks
-                st.session_state.index = faiss_index
-                st.session_state.pdf_name = uploaded_file.name
-                st.session_state.chat_history = []
-                st.session_state.last_query = ""
-        st.markdown(f'<div class="badge badge-ready">✓ {uploaded_file.name}</div>', unsafe_allow_html=True)
-        st.caption(f"{len(st.session_state.chunks)} chunks indexed")
-    else:
-        st.markdown('<div class="badge badge-noindex">⚠ No document loaded</div>', unsafe_allow_html=True)
-
-    if st.session_state.chat_history:
-        st.markdown('<div class="sidebar-section">Chat</div>', unsafe_allow_html=True)
-        if st.button("Clear chat"):
-            st.session_state.chat_history = []
-            st.session_state.last_query = ""
-            st.rerun()
-
-    st.markdown('<div class="sidebar-section">About</div>', unsafe_allow_html=True)
-    st.caption("Built with LangChain · FAISS · BGE · Groq")
-
-# ─────────────────────────────────────────────
-#  MAIN AREA
-# ─────────────────────────────────────────────
-st.markdown('<div class="rag-header">✦ Research Assistant</div>', unsafe_allow_html=True)
-st.markdown('<div class="rag-sub">retrieval-augmented generation · pdf question answering</div>', unsafe_allow_html=True)
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-if st.session_state.index is None:
-    st.markdown("""
-    <div style="text-align:center; padding: 4rem 2rem; color: #4a3f7a;">
-        <div style="font-size:2.5rem; margin-bottom:1rem;">✦</div>
-        <div style="font-family:'Cinzel',serif; font-size:1rem; color:#6b5ea8; letter-spacing:0.1em;">
-            Upload a PDF to begin
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    # ── Chat history ──
-    for msg in st.session_state.chat_history:
-        if msg["role"] == "user":
-            st.markdown(f"""
-            <div class="chat-user">
-                <div class="chat-label label-user">You</div>
-                {msg["content"]}
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="chat-assistant">
-                <div class="chat-label label-bot">Assistant</div>
-                {msg["content"]}
-            </div>""", unsafe_allow_html=True)
-
-    # ── Input ──
-    query = st.text_input(
-        "Ask a question",
-        placeholder="What does this document say about...",
-        label_visibility="collapsed",
-        key="query_input"
+    uploaded_files = st.file_uploader(
+        "Upload PDF / DOCX / TXT",
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True,
     )
 
-    if query and query != st.session_state.last_query:
-        st.session_state.last_query = query
-        st.session_state.chat_history.append({"role": "user", "content": query})
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            key = f"{uploaded_file.name}:{uploaded_file.size}"
+            if key in st.session_state.processed_names:
+                continue
 
-        with st.spinner("Thinking..."):
-            answer = ask(query, st.session_state.chunks, st.session_state.index)
+            with st.spinner(f"Processing {uploaded_file.name}..."):
+                try:
+                    file_bytes = uploaded_file.getvalue()
+                    doc = rag_core.build_document(file_bytes, uploaded_file.name)
+                    st.session_state.documents[doc["hash"]] = doc
+                    st.session_state.active_docs.add(doc["hash"])
+                    st.session_state.processed_names.add(key)
 
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
-        st.rerun()
+                    note = " (loaded from cache)" if doc.get("from_cache") else ""
+                    st.success(f"{uploaded_file.name} processed{note}.")
+                except Exception as error:
+                    st.error(f"Failed to process {uploaded_file.name}: {error}")
+
+    if not rag_core.OCR_AVAILABLE:
+        st.caption("⚠️ OCR fallback for scanned PDFs is disabled (pytesseract/poppler not installed).")
+
+    # ------------------------------------------------------
+    # Document list with active/inactive toggles
+    # ------------------------------------------------------
+    if st.session_state.documents:
+        st.markdown('<div class="sidebar-section-label">DOCUMENTS</div>', unsafe_allow_html=True)
+
+        for h, doc in list(st.session_state.documents.items()):
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                is_active = st.checkbox(
+                    doc["name"],
+                    value=(h in st.session_state.active_docs),
+                    key=f"active_{h}",
+                    help=f"{len(doc['chunks'])} chunks indexed",
+                )
+                if is_active:
+                    st.session_state.active_docs.add(h)
+                else:
+                    st.session_state.active_docs.discard(h)
+            with col2:
+                if st.button("✕", key=f"remove_{h}", help="Remove this document"):
+                    st.session_state.documents.pop(h, None)
+                    st.session_state.active_docs.discard(h)
+                    st.rerun()
+
+    st.markdown('<div class="sidebar-section-label">MODEL</div>', unsafe_allow_html=True)
+    model_label = st.selectbox(
+        "Model",
+        options=list(rag_core.AVAILABLE_MODELS.keys()),
+        label_visibility="collapsed",
+    )
+    st.session_state.selected_model = rag_core.AVAILABLE_MODELS[model_label]
+
+    score_threshold = st.slider(
+        "Relevance threshold", min_value=0.0, max_value=0.6, value=0.25, step=0.05,
+        help="Chunks scoring below this similarity are dropped before answering.",
+    )
+
+    st.divider()
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.rerun()
+    with col_b:
+        if st.session_state.chat_history:
+            transcript_lines = []
+            for m in st.session_state.chat_history:
+                who = "You" if m["role"] == "user" else "Assistant"
+                transcript_lines.append(f"**{who}:** {m['content']}\n")
+            transcript = "\n".join(transcript_lines)
+            st.download_button(
+                "Export",
+                data=transcript,
+                file_name=f"transcript_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+
+    with st.expander("Usage log"):
+        rows = rag_core.get_recent_logs(limit=8)
+        if not rows:
+            st.caption("No queries logged yet.")
+        else:
+            for ts, question, model, docs, latency, top_score in rows:
+                when = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+                st.caption(f"`{when}` · {latency:.1f}s · {model.split('/')[-1]} — {question[:40]}")
+
+    st.caption("Powered by FAISS + BGE embeddings + Groq")
+
+
+# ============================================================
+# MAIN HEADER
+# ============================================================
+
+st.markdown('<div class="app-title">✦ RAG PDF Q&A</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="app-subtitle">Ask questions and get cited answers straight from your documents.</div>',
+    unsafe_allow_html=True,
+)
+
+active_documents = [
+    st.session_state.documents[h] for h in st.session_state.active_docs
+    if h in st.session_state.documents
+]
+
+
+# ============================================================
+# EMPTY STATE
+# ============================================================
+
+if not active_documents:
+    st.markdown(
+        """
+        <div class="rr-empty">
+            <h3>Upload a document to begin</h3>
+            <p>Upload a PDF, DOCX, or TXT file from the sidebar, then ask questions about its content.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ============================================================
+# CHAT INTERFACE
+# ============================================================
+
+else:
+
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            if message["role"] == "assistant" and message.get("confidence"):
+                label, color = message["confidence"]
+                st.markdown(
+                    f'<span class="rr-badge rr-badge-{color}">● {label} confidence</span>',
+                    unsafe_allow_html=True,
+                )
+            st.markdown(message["content"])
+            if message.get("sources"):
+                with st.expander(f"Sources ({len(message['sources'])})"):
+                    for s in message["sources"]:
+                        page_str = f", page {s['page']}" if s.get("page") else ""
+                        st.markdown(
+                            f'<div class="rr-source"><b>{s["doc"]}</b>{page_str} '
+                            f'· score {s["score"]:.2f}<br>{s["text"][:220]}...</div>',
+                            unsafe_allow_html=True,
+                        )
+
+    query = st.chat_input("Ask something about your documents...")
+
+    if query:
+        query = query.strip()
+
+        if query:
+            st.session_state.chat_history.append({"role": "user", "content": query})
+            with st.chat_message("user"):
+                st.markdown(query)
+
+            with st.chat_message("assistant"):
+                try:
+                    start = time.time()
+
+                    retrieved = rag_core.retrieve(
+                        query, active_documents, k=3, score_threshold=score_threshold
+                    )
+                    top_score = retrieved[0]["score"] if retrieved else None
+                    label, color = rag_core.confidence_label(top_score)
+
+                    st.markdown(
+                        f'<span class="rr-badge rr-badge-{color}">● {label} confidence</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                    if not retrieved:
+                        answer = "I don't know based on the provided document."
+                        st.markdown(answer)
+                    else:
+                        answer = st.write_stream(
+                            rag_core.ask_stream(
+                                query,
+                                retrieved,
+                                history=st.session_state.chat_history[:-1],
+                                model=st.session_state.selected_model,
+                            )
+                        )
+
+                    latency = time.time() - start
+
+                    if retrieved:
+                        with st.expander(f"Sources ({len(retrieved)})"):
+                            for s in retrieved:
+                                page_str = f", page {s['page']}" if s.get("page") else ""
+                                st.markdown(
+                                    f'<div class="rr-source"><b>{s["doc"]}</b>{page_str} '
+                                    f'· score {s["score"]:.2f}<br>{s["text"][:220]}...</div>',
+                                    unsafe_allow_html=True,
+                                )
+
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "sources": retrieved,
+                        "confidence": (label, color),
+                    })
+
+                    rag_core.log_usage(
+                        question=query,
+                        model=st.session_state.selected_model,
+                        doc_names=[d["name"] for d in active_documents],
+                        latency_sec=latency,
+                        top_score=top_score,
+                    )
+
+                except Exception as error:
+                    st.error(f"Error: {error}")
+                    if (
+                        st.session_state.chat_history
+                        and st.session_state.chat_history[-1]["role"] == "user"
+                    ):
+                        st.session_state.chat_history.pop()

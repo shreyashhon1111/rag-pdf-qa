@@ -1,1 +1,10 @@
-hf-space/
+.venv/
+.env
+.env.save
+__pycache__/
+*.pyc
+.mypy_cache/
+.rag_cache/
+usage_log.db
+.DS_Store
+.streamlit/
